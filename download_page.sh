@@ -54,11 +54,43 @@ spinner() {
 # Step 1: Download JSON response from AllOrigins /get endpoint
 printf '\033[1;34m[1/4]\033[0m Downloading page via AllOrigins proxy...'
 tmp_json="${outfile}.json"
-curl -fsSL --get --data-urlencode "url=$url" -A "download_page/1.0" -o "$tmp_json" "$proxy_base/get" &
-spinner $!
-wait $!
-if [ $? -ne 0 ]; then
-  printf '\n\033[1;31mError:\033[0m failed to download via proxy %s\n' "$proxy_base" >&2
+
+# Retry logic with exponential backoff
+max_retries=3
+retry_count=0
+success=false
+
+while [ $retry_count -lt $max_retries ]; do
+  if [ $retry_count -gt 0 ]; then
+    printf '\n\033[1;33m↻ Retry %d/%d...\033[0m' "$retry_count" "$((max_retries-1))"
+    sleep $((retry_count * 2))
+  fi
+
+  # Use HTTP/1.1, longer timeout, verbose for debugging
+  printf '\n'
+  curl -fL --verbose --http1.1 --max-time 120 --connect-timeout 15 \
+    --get --data-urlencode "url=$url" -A "download_page/1.0" \
+    -o "$tmp_json" "$proxy_base/get"
+  curl_exit=$?
+  printf '\n'
+
+  if [ $curl_exit -eq 0 ] && [ -s "$tmp_json" ]; then
+    success=true
+    break
+  fi
+
+  # Show what went wrong
+  if [ $curl_exit -ne 0 ]; then
+    printf ' \033[1;31m(exit code: %d)\033[0m' "$curl_exit"
+  fi
+
+  retry_count=$((retry_count + 1))
+done
+
+if [ "$success" = false ]; then
+  printf '\n\033[1;31mError:\033[0m AllOrigins proxy failed after %d attempts\n' "$max_retries" >&2
+  printf 'Try again later or check if AllOrigins service is down\n' >&2
+  rm -f "$tmp_json"
   exit 2
 fi
 printf ' \033[1;32m✓\033[0m\n'
